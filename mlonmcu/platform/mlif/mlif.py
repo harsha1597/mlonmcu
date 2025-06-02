@@ -87,6 +87,7 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
         "garbage_collect": True,
         "strip_strings": False,
         "unroll_loops": None,
+        "inlinef":None,
         "goal": "generic_mlonmcu",  # Use 'generic_mlif' for older version of MLIF
         "set_inputs": False,
         "set_inputs_interface": None,
@@ -382,6 +383,11 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
     def unroll_loops(self):
         value = self.config["unroll_loops"]
         return str2bool(value, allow_none=True)
+    
+    @property
+    def inlinef(self):
+        value = self.config["inlinef"]
+        return str2bool(value, allow_none=True)
 
     def get_supported_targets(self):
         target_names = get_mlif_platform_targets()
@@ -437,6 +443,8 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
             definitions["STRIP_STRINGS"] = self.strip_strings
         if self.unroll_loops is not None:
             definitions["UNROLL_LOOPS"] = self.unroll_loops
+        if self.inlinef is not None:
+            definitions["INLINEF"] = self.inlinef
         if self.ccache:
             definitions["CMAKE_C_COMPILER_LAUNCHER"] = "ccache"  # TODO: choose between ccache/sccache
             definitions["CMAKE_CXX_COMPILER_LAUNCHER"] = "ccache"  # TODO: choose between ccache/sccache
