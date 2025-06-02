@@ -18,9 +18,15 @@
 #
 import glob
 import os
-
+import ast
 import pandas as pd
 
+# Given a list of columns, this function will add those columns to the dataframe
+def add_column(df,cols):
+    df["Config"] = df["Config"].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
+    for col in cols:
+        df[col] = df["Config"].apply(lambda x: x.get(col, None) if isinstance(x, dict) else None)
+    return df
 
 def find_newest_report():
     home = os.getenv("MLONMCU_HOME")
