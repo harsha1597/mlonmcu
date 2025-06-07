@@ -35,7 +35,8 @@ def find_newest_report():
     return latest_file
 
 
-def tabularize_latest_report():
+def tabularize_latest_report(add_cols=None):
     report_file = find_newest_report()
     df = pd.read_csv(report_file, sep=",")
+    df = add_column(df,add_cols) if add_cols else df
     return df
