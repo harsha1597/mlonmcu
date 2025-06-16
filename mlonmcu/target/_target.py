@@ -24,6 +24,7 @@ from .riscv import (
     RiscvQemuTarget,
     GvsocPulpTarget,
     EtissTarget,
+    EtissPerfTarget,
     EtissRV32Target,
     EtissRV64Target,
     AraTarget,
@@ -31,6 +32,7 @@ from .riscv import (
     CV32E40PTarget,
     VicunaTarget,
     CanMvK230SSHTarget,
+    TGCTarget,
 )
 from .arm import Corstone300Target
 from .host_x86 import HostX86Target
@@ -53,6 +55,7 @@ def get_targets():
 
 register_target("etiss_pulpino", EtissPulpinoTarget)
 register_target("etiss", EtissTarget)
+register_target("etiss_perf", EtissPerfTarget)
 register_target("etiss_rv32", EtissRV32Target)
 register_target("etiss_rv64", EtissRV64Target)
 register_target("host_x86", HostX86Target)
@@ -71,3 +74,4 @@ register_target("ara_rtl", AraRtlTarget)
 register_target("cv32e40p", CV32E40PTarget)
 register_target("vicuna", VicunaTarget)
 register_target("canmv_k230_ssh", CanMvK230SSHTarget)
+register_target("tgc", TGCTarget)
