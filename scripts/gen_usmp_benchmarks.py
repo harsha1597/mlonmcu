@@ -193,6 +193,7 @@ def benchmark(args):
                             features = gen_features(backend, backend_features, validate=args.validate)
                             config = gen_config(backend, backend_config, features, enable_postprocesses=args.post)
                             config.update(user_config)  # TODO
+                            print("RUN", model, config, features, backend, target)
                             run = session.create_run(config=config)
                             run.add_features_by_name(features, context=context)
                             run.add_platform_by_name(PLATFORM, context=context)

@@ -348,97 +348,98 @@ def benchmark(args):
     # print("args", args)
     with MlonMcuContext() as context:
         user_config = context.environment.vars  # TODO: get rid of this workaround
-        session = context.create_session()
-        models = apply_modelgroups(args.models, context=context)
-        for model in models:
-            # print("model", model)
-            for backend in args.backend:
-                # print("backend", backend)
-                for target in args.target:
-                    # print("target", target)
-                    enable_default = not args.skip_default
-                    enable_target_optimized = "target_optimized" in args.feature
-                    enable_auto_vectorize = "auto_vectorize" in args.feature
-                    enable_vext = "vext" in args.feature
-                    enable_pext = "pext" in args.feature
-                    enable_arm_schedules = "arm_schedules" in args.feature
-                    for target_features in get_target_features(
-                        target,
-                        enable_default=enable_default,
-                        enable_target_optimized=enable_target_optimized,
-                        enable_auto_vectorize=enable_auto_vectorize,
-                        enable_vext=enable_vext,
-                        enable_pext=enable_pext,
-                    ):
-                        # print("target_features", target_features)
-                        enable_autotuned = False
-                        if args.autotuned:
-                            # if "target_optimized" not in target_features and backend == "tvmaot":
-                            if backend == "tvmaot":
-                                pass
-                                # enable_autotuned = True
-                        enable_disable_legalize = (
-                            "disable_legalize" in args.feature and "target_optimized" not in target_features
-                        )
-                        for backend_features in get_backend_features(
-                            backend,
+        # session = context.create_session()
+        with context.create_session() as session:
+            models = apply_modelgroups(args.models, context=context)
+            for model in models:
+                # print("model", model)
+                for backend in args.backend:
+                    # print("backend", backend)
+                    for target in args.target:
+                        # print("target", target)
+                        enable_default = not args.skip_default
+                        enable_target_optimized = "target_optimized" in args.feature
+                        enable_auto_vectorize = "auto_vectorize" in args.feature
+                        enable_vext = "vext" in args.feature
+                        enable_pext = "pext" in args.feature
+                        enable_arm_schedules = "arm_schedules" in args.feature
+                        for target_features in get_target_features(
                             target,
-                            enable_autotuned=enable_autotuned,
-                            enable_disable_legalize=enable_disable_legalize,
+                            enable_default=enable_default,
+                            enable_target_optimized=enable_target_optimized,
+                            enable_auto_vectorize=enable_auto_vectorize,
+                            enable_vext=enable_vext,
+                            enable_pext=enable_pext,
                         ):
-                            # print("backend_features", backend_features)
-                            features = list(set(target_features + backend_features))
-                            # print("features", features)
-                            for backend_config in get_backend_config(
+                            # print("target_features", target_features)
+                            enable_autotuned = False
+                            if args.autotuned:
+                                # if "target_optimized" not in target_features and backend == "tvmaot":
+                                if backend == "tvmaot":
+                                    pass
+                                    # enable_autotuned = True
+                            enable_disable_legalize = (
+                                "disable_legalize" in args.feature and "target_optimized" not in target_features
+                            )
+                            for backend_features in get_backend_features(
                                 backend,
-                                features,
+                                target,
                                 enable_autotuned=enable_autotuned,
-                                enable_arm_schedules=enable_arm_schedules,
+                                enable_disable_legalize=enable_disable_legalize,
                             ):
-                                vlens = [0]
-                                if "vext" in features:
-                                    if "target_optimized" in features or "auto_vectorize" in features:
-                                        vlens = args.vlen
-                                    else:
-                                        continue
-                                features = gen_features(backend, features, validate=args.validate)
-                                for vlen in vlens:
-                                    # print("vlen", vlen)
-                                    for toolchain in args.toolchain:
-                                        if toolchain == "llvm" and "pext" in features:
-                                            continue  # TODO: move this check up!
-                                        config = gen_config(
-                                            backend,
-                                            backend_config,
-                                            features,
-                                            vlen,
-                                            toolchain,
-                                            enable_postprocesses=args.post,
-                                        )
-                                        config.update(user_config)  # TODO
-                                        # resolve_missing_configs(config, features, target, context)
-                                        # print("RUN", model, config, features, backend, target)
-                                        run = session.create_run(config=config)
-                                        run.add_features_by_name(features, context=context)
-                                        run.add_platform_by_name(PLATFORM, context=context)
-                                        run.add_frontend_by_name(FRONTEND, context=context)
-                                        run.add_model_by_name(model, context=context)
-                                        run.add_backend_by_name(backend, context=context)
-                                        run.add_target_by_name(target, context=context)
-                                        if args.post:
-                                            run.add_postprocesses_by_name(POSTPROCESSES_0)
-                                            run.add_postprocess(CustomPostprocess(), append=True)
-                                            run.add_postprocesses_by_name(POSTPROCESSES_1, append=True)
-        if args.noop:
-            stage = RunStage.LOAD
-        else:
-            stage = RunStage.RUN
-        session.process_runs(until=stage, num_workers=args.parallel, progress=args.progress, context=context)
-        report = session.get_reports()
-        report_file = args.output
-        report.export(report_file)
-        print()
-        print(report.df)
+                                # print("backend_features", backend_features)
+                                features = list(set(target_features + backend_features))
+                                # print("features", features)
+                                for backend_config in get_backend_config(
+                                    backend,
+                                    features,
+                                    enable_autotuned=enable_autotuned,
+                                    enable_arm_schedules=enable_arm_schedules,
+                                ):
+                                    vlens = [0]
+                                    if "vext" in features:
+                                        if "target_optimized" in features or "auto_vectorize" in features:
+                                            vlens = args.vlen
+                                        else:
+                                            continue
+                                    features = gen_features(backend, features, validate=args.validate)
+                                    for vlen in vlens:
+                                        # print("vlen", vlen)
+                                        for toolchain in args.toolchain:
+                                            if toolchain == "llvm" and "pext" in features:
+                                                continue  # TODO: move this check up!
+                                            config = gen_config(
+                                                backend,
+                                                backend_config,
+                                                features,
+                                                vlen,
+                                                toolchain,
+                                                enable_postprocesses=args.post,
+                                            )
+                                            config.update(user_config)  # TODO
+                                            # resolve_missing_configs(config, features, target, context)
+                                            print("RUN", model, config, features, backend, target)
+                                            run = session.create_run(config=config)
+                                            run.add_features_by_name(features, context=context)
+                                            run.add_platform_by_name(PLATFORM, context=context)
+                                            run.add_frontend_by_name(FRONTEND, context=context)
+                                            run.add_model_by_name(model, context=context)
+                                            run.add_backend_by_name(backend, context=context)
+                                            run.add_target_by_name(target, context=context)
+                                            if args.post:
+                                                run.add_postprocesses_by_name(POSTPROCESSES_0)
+                                                run.add_postprocess(CustomPostprocess(), append=True)
+                                                run.add_postprocesses_by_name(POSTPROCESSES_1, append=True)
+            if args.noop:
+                stage = RunStage.LOAD
+            else:
+                stage = RunStage.RUN
+            session.process_runs(until=stage, num_workers=args.parallel, progress=args.progress, context=context)
+            report = session.get_reports()
+            report_file = args.output
+            report.export(report_file)
+            print()
+            print(report.df)
 
 
 def main():
@@ -548,6 +549,7 @@ def main():
         "--verbose",
         "-v",
         action="store_true",
+        default=True,
         help="Print detailed messages for easier debugging (default: %(default)s)",
     )
     parser.add_argument(

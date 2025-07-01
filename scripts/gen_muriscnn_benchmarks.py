@@ -2,7 +2,7 @@ import os
 import argparse
 import multiprocessing
 import logging
-
+import json
 # import mlonmcu
 from mlonmcu.context.context import MlonMcuContext
 from mlonmcu.session.run import RunStage
@@ -341,6 +341,7 @@ def benchmark(args):
                                     )
                                     config.update(user_config)  # TODO
                                     # resolve_missing_configs(config, features, target, context)
+                                    print("RUN", model, json.dumps(config, indent=4), features, backend, target)
                                     run = session.create_run(config=config)
                                     run.add_features_by_name(features, context=context)
                                     run.add_platform_by_name(PLATFORM, context=context)
