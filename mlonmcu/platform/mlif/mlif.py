@@ -25,7 +25,7 @@ from pathlib import Path
 import yaml
 import numpy as np
 
-from mlonmcu.config import str2bool
+from mlonmcu.config import str2bool,str2dict
 from mlonmcu.setup import utils  # TODO: Move one level up?
 from mlonmcu.timeout import exec_timeout
 from mlonmcu.artifact import Artifact, ArtifactFormat
@@ -77,6 +77,7 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
         "toolchain": "gcc",
         "prebuild_lib_path": None,
         "optimize": None,  # values: 0,1,2,3,s
+        "optimize_per_file": None,
         "input_data_path": None,
         "output_data_path": None,
         "mem_only": False,
@@ -324,6 +325,10 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
     @property
     def optimize(self):
         return self.config["optimize"]
+    
+    @property
+    def optimize_per_file(self):
+        return str2dict(self.config["optimize_per_file"], allow_none=True)
 
     @property
     def input_data_path(self):
@@ -425,6 +430,9 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
             definitions["LLVM_DIR"] = llvm_dir
         if self.optimize is not None:
             definitions["OPTIMIZE"] = self.optimize
+        if self.optimize_per_file is not None:
+            for file, opt in self.optimze_per_file.items():
+                definitions[f"MLIF_OPTIMIZE_PER_FILE_{file}"] = opt
         if self.debug_symbols is not None:
             definitions["DEBUG_SYMBOLS"] = self.debug_symbols
         if self.verbose_makefile is not None:

@@ -489,6 +489,8 @@ class TVMBackend(Backend):
         with tempfile.TemporaryDirectory() as temp_dir:
             out_path = Path(temp_dir) / f"{self.prefix}.tar"
             out = self.invoke_tvmc_compile(out_path, dump=dump, cwd=temp_dir)
+            print("temp_dir", temp_dir) 
+            input(">>>")
             if self.fmt == "mlf":
                 mlf_path = Path(temp_dir) / "mlf"
                 tarfile.open(out_path).extractall(mlf_path)
