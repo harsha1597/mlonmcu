@@ -257,7 +257,7 @@ class TVMBackend(Backend):
 
     @property
     def tvmc_extra_args(self):
-        return self.config["tvmc_extra_args"]
+        return str2list(self.config["tvmc_extra_args"], allow_none=True)
 
     @property
     def tvmc_custom_script(self):
@@ -308,7 +308,7 @@ class TVMBackend(Backend):
             else:
                 value = [value]
         for v in value:
-            assert v in ["relay", "c", "ll", "tir"]
+            assert v in ["relay", "c", "ll", "tir", "tir0", "tir1", "tir2", "tir3", "dso"]
         assert isinstance(value, list)
         return value
 
