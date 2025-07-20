@@ -77,7 +77,7 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
         "toolchain": "gcc",
         "prebuild_lib_path": None,
         "optimize": None,  # values: 0,1,2,3,s
-        "optimize_per_file": None,
+        "optimize_per_file": None, # {0:"s",1:3,2:3}
         "input_data_path": None,
         "output_data_path": None,
         "mem_only": False,
@@ -431,8 +431,11 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
         if self.optimize is not None:
             definitions["OPTIMIZE"] = self.optimize
         if self.optimize_per_file is not None:
-            for file, opt in self.optimze_per_file.items():
-                definitions[f"MLIF_OPTIMIZE_PER_FILE_{file}"] = opt
+            for file, opt in self.optimize_per_file.items():
+                file_name = f"default_lib{file}.c" # Assuming default_lib0.c, default_lib1.c, etc.
+                logger.debug(f"Setting optimization for file: {file_name}, to, {opt}")
+                
+                definitions[f"MLIF_OPTIMIZE_PER_FILE_{file_name}"] = opt
         if self.debug_symbols is not None:
             definitions["DEBUG_SYMBOLS"] = self.debug_symbols
         if self.verbose_makefile is not None:
@@ -470,6 +473,8 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
     def get_cmake_args(self):
         cmakeArgs = []
         definitions = self.get_definitions()
+        
+        # logger.info(f"CMake definitions: {definitions}")
         for key, value in definitions.items():
             if isinstance(value, bool):
                 value = "ON" if value else "OFF"

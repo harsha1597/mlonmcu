@@ -1510,7 +1510,9 @@ class LogInstructions(TargetFeature):
                 def log_instrs_callback(stdout, metrics, artifacts, directory=None):
                     """Callback which parses the targets output and updates the generated metrics and artifacts."""
                     new_lines = []
+                    # print("LogInstr_Collback_Executing: ",stdout,artifacts)
                     if self.to_file:
+                        # print("LogInstr_Collback_Executing: ",stdout,artifacts)
                         if target in ["etiss_pulpino", "etiss", "etiss_perf"]:
                             if self.etiss_experimental_print_to_file:
                                 log_file = Path(directory) / "instr_trace.csv"
