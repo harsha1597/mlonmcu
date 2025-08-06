@@ -697,6 +697,8 @@ def benchmark(args):
                                                                 config.update(user_config)  # TODO
                                                                 # resolve_missing_configs(config, features,
                                                                 #   target, context)
+                                                                print("Config: ", config, "Features: ", features)
+                                                                input("Press enter to continue")
                                                                 run = session.create_run(config=config)
                                                                 run.add_features_by_name(features, context=context)
                                                                 run.add_platform_by_name(PLATFORM, context=context)
@@ -720,6 +722,8 @@ def benchmark(args):
                 stage = RunStage.LOAD
             else:
                 stage = RunStage.COMPILE if MEM_ONLY else RunStage.RUN
+            print("Entering run stage:")
+            input("Exit")
             success = session.process_runs(
                 until=stage,
                 num_workers=args.parallel,
@@ -774,7 +778,7 @@ def main():
         action="append",
         choices=FEATURES,
         # default=default_features,
-        default=[],
+        default=DEFAULT_FEATURES,
         help=f"features to use (default: {DEFAULT_FEATURES})",
     )
     parser.add_argument(

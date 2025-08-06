@@ -433,7 +433,7 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
         if self.optimize_per_file is not None:
             for file, opt in self.optimize_per_file.items():
                 file_name = f"default_lib{file}.c" # Assuming default_lib0.c, default_lib1.c, etc.
-                logger.debug(f"Setting optimization for file: {file_name}, to, {opt}")
+                # logger.debug(f"Setting optimization for file: {file_name}, to, {opt}")
                 
                 definitions[f"MLIF_OPTIMIZE_PER_FILE_{file_name}"] = opt
         if self.debug_symbols is not None:
