@@ -78,6 +78,7 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
         "prebuild_lib_path": None,
         "optimize": None,  # values: 0,1,2,3,s
         "optimize_per_file": None, # {0:"s",1:3,2:3}
+        "opt_w_cost_model":False, # Filters configs of interests to compile and run
         "input_data_path": None,
         "output_data_path": None,
         "mem_only": False,
@@ -329,6 +330,10 @@ class MlifPlatform(CompilePlatform, TargetPlatform):
     @property
     def optimize_per_file(self):
         return str2dict(self.config["optimize_per_file"], allow_none=True)
+    
+    @property
+    def opt_w_cost_model(self):
+        return str2bool(self.config["opt_w_cost_model"])
 
     @property
     def input_data_path(self):

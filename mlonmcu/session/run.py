@@ -18,14 +18,15 @@
 #
 """Definition of a MLonMCU Run which represents a single benchmark instance for a given set of options."""
 import itertools
-import time
+import time,datetime
 import os
 import copy
 import tempfile
 from pathlib import Path
 from enum import IntEnum
 from collections import defaultdict
-
+from mlonmcu.session.estimate.gcn import EstimatePostBuild
+from mlonmcu.session.estimate.extract_graph import get_sw_flags
 from mlonmcu.logging import get_logger
 from mlonmcu.artifact import ArtifactFormat, lookup_artifacts
 from mlonmcu.config import str2bool
@@ -39,7 +40,7 @@ from mlonmcu.models import SUPPORTED_FRONTENDS
 from mlonmcu.models.model import Model, Program
 from mlonmcu.platform import get_platforms
 from mlonmcu.flow import SUPPORTED_FRAMEWORKS, SUPPORTED_BACKENDS
-
+from mlonmcu.artifact import Artifact, ArtifactFormat, lookup_artifacts
 from .postprocess import SUPPORTED_POSTPROCESSES
 from .postprocess.postprocess import RunPostprocess
 
@@ -53,9 +54,10 @@ class RunStage(IntEnum):
     LOAD = 1  # unimplemented
     TUNE = 2
     BUILD = 3
-    COMPILE = 4
-    RUN = 5
-    POSTPROCESS = 6
+    ESTIMATE=4 # Check if this causes bugs
+    COMPILE = 5
+    RUN = 6
+    POSTPROCESS = 7
     DONE = 7
 
 
@@ -76,15 +78,17 @@ class Run:
     """A run is single model/backend/framework/target combination with a given set of features and configs."""
 
     FEATURES = {"autotune", "target_optimized", "validate_new"}
-
+    SW_FLAGS={'toolchain': 'gcc', 'optimize': '3', 'lto': 1, 'slim_cpp': 1, 'garbage_collect': 0} #,'unroll_loops' ,'inline_functions',"slim_cpp"]
     DEFAULTS = {
         "export_optional": False,
         "tune_enabled": False,
+        "estimate_postbuild":False,
         "target_to_backend": True,
         "target_optimized_layouts": False,
         "target_optimized_schedules": False,
         "stage_subdirs": False,
         "profile_stages": False,
+        "cost_model_path": "/nfs/TUEIEDAscratch/ge85zic/mlonmcu/mlonmcu/session/estimate/model/GNN_Estimator.pt"
     }
 
     REQUIRED = set()
@@ -116,6 +120,7 @@ class Run:
         self.frontends = frontends if frontends is not None else []
         self.framework = framework  # ???
         self.backend = backend
+        
         self.platforms = platforms if platforms is not None else []
         self.artifacts_per_stage = {}
         self.archived = archived
@@ -134,6 +139,8 @@ class Run:
         self.run_config = {}
         self.run_features = self.process_features(features)
         self.run_config = filter_config(self.config, "run", self.DEFAULTS, self.OPTIONAL, self.REQUIRED)
+        self.estimator = EstimatePostBuild(self.run_config["cost_model_path"])
+        self.sw_flags = self.get_sw_flags_from_configs()
         self.sub_names = []
         self.sub_parents = {}
         self.result = None
@@ -157,11 +164,23 @@ class Run:
             feature.add_run_config(tmp_run_config)
             self.run_config = filter_config(tmp_run_config, "run", self.DEFAULTS, self.OPTIONAL, self.REQUIRED)
         return features
-
+    
+    def get_sw_flags_from_configs(self):
+        mlif_flags = filter_config(self.config, "mlif", self.SW_FLAGS, set(), set())
+        logger.debug(f"SW Flags from configs: {mlif_flags}")
+        sw_flags = get_sw_flags(sw_dict=mlif_flags,post_run=False)
+        return sw_flags
+    
     @property
     def tune_enabled(self):
         """Get tune_enabled property."""
         value = self.run_config["tune_enabled"]
+        return str2bool(value)
+    
+    @property
+    def estimate_enabled(self):
+        """Get estimate_enabled property."""
+        value = self.run_config["estimate_postbuild"]
         return str2bool(value)
 
     @property
@@ -251,6 +270,8 @@ class Run:
             return self.model is not None and len(self.frontends) > 0
         if stage == RunStage.TUNE:
             return self.tune_enabled and self.backend is not None
+        if stage == RunStage.ESTIMATE:
+            return self.estimate_enabled
         if stage == RunStage.BUILD:
             return self.backend is not None and self.framework is not None
         if stage == RunStage.COMPILE:
@@ -698,7 +719,7 @@ class Run:
 
     def postprocess(self):
         """Postprocess the 'run'."""
-        logger.debug("%s Processing stage POSTPROCESS", self.prefix)
+        logger.debug("%s [%s] Processing stage POSTPROCESS", self.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lock()
         # assert self.completed[RunStage.RUN]  # Alternative: allow to trigger previous stages recursively as a fallback
 
@@ -757,7 +778,7 @@ class Run:
 
     def run(self):
         """Run the 'run' using the defined target."""
-        logger.debug("%s Processing stage RUN", self.prefix)
+        logger.debug("%s [%s] Processing stage RUN", self.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lock()
         # Alternative: drop artifacts of higher stages when re-triggering a lower one?
         self.artifacts_per_stage[RunStage.RUN] = {}
@@ -807,7 +828,7 @@ class Run:
 
     def compile(self):
         """Compile the target software for the run."""
-        logger.debug("%s Processing stage COMPILE", self.prefix)
+        logger.debug("%s [%s] Processing stage COMPILE", self.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lock()
         if isinstance(self.model, Model):
             assert self.completed[RunStage.BUILD]
@@ -859,7 +880,7 @@ class Run:
 
     def build(self):
         """Process the run using the choosen backend."""
-        logger.debug("%s Processing stage BUILD", self.prefix)
+        logger.debug("%s [%s] Processing stage BUILD", self.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lock()
         assert (not self.has_stage(RunStage.TUNE)) or self.completed[RunStage.TUNE]
 
@@ -983,7 +1004,7 @@ class Run:
 
     def tune(self):
         """Tune the run using the choosen backend (if supported)."""
-        logger.debug("%s Processing stage TUNE", self.prefix)
+        logger.debug("%s [%s] Processing stage TUNE", self.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lock()
         assert self.completed[RunStage.LOAD]
 
@@ -1023,10 +1044,80 @@ class Run:
 
         self.completed[RunStage.TUNE] = True
         self.unlock()
+    
+    def estimate(self):
+        import pickle
+        """Estimate runtime and codesize using a cost model."""
+        logger.debug("%s [%s] Processing stage ESTIMATE", self.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        # logger.info(f"MLIF flags: {self.sw_flags}")
+        debug_path = "/nfs/TUEIEDAscratch/ge85zic/graph_regressor/mlonmcu_graph/debug/"
 
+        def get_tir_and_c_files(contents):
+            tir_file = "default.tir"
+            c_file = "default.c"
+            tir_file_path = None
+            c_file_path = None
+            if tir_file in contents:
+                tir_file_path=os.path.join(codegen_dir, tir_file)
+            else:
+                logger.warning(f"TIR file {tir_file} not found in {codegen_dir}")
+                return None,None
+            if c_file in contents:
+                c_file_path=os.path.join(codegen_dir, c_file)
+            elif "codegen" in contents:
+                # try to find c file with default prefix
+                import glob
+                c_files = glob.glob(os.path.join(codegen_dir, "codegen","host","src","default*.c"))
+                # Locate the c file with the main definition
+                if len(c_files) == 3:
+                    c_file_w_main = "default_lib2.c"
+                elif len(c_files)>1:
+                    c_file_w_main = "default_lib1.c"
+                c_file_path = [path for path in c_files if c_file_w_main in os.path.basename(path)]
+                c_file_path = c_file_path[0] if len(c_file_path) == 1 else None
+            return tir_file_path, c_file_path
+        
+        self.lock()
+        if isinstance(self.model, Model):
+            assert self.completed[RunStage.BUILD]
+
+            self.export_stage(RunStage.BUILD, optional=self.export_optional)
+            self.artifacts_per_stage[RunStage.ESTIMATE] = {}
+            
+            # c_file_default_path = "codegen/host/src/default*.c"
+            
+            codegen_dir = self.dir if not self.stage_subdirs else (self.dir / "stages" / str(int(RunStage.BUILD)))
+            contents = os.listdir(codegen_dir)
+            
+        else:
+            assert self.completed[RunStage.LOAD]
+            self.artifacts_per_stage[RunStage.COMPILE] = {}
+            codegen_dir = self.dir if not self.stage_subdirs else (self.dir / "stages" / str(int(RunStage.BUILD)))
+            contents = os.listdir(codegen_dir)
+
+        tir_file_path, c_file_path = get_tir_and_c_files(contents)
+        if c_file_path and tir_file_path:
+            # logger.info(f"Estimating using TIR file: {tir_file_path} and C file: {c_file_path}")
+            try:
+                predicted_runtime, predicted_code_size = self.estimator.estimate(c_file=c_file_path, tir_file=tir_file_path, sw_feats=self.sw_flags)
+                logger.info(f"Predicted values - Runtime: {predicted_runtime} s, Code size: {predicted_code_size} bytes")
+            except Exception as e:
+                logger.error(f"Error occurred during estimation: {e}")
+        # temp_report = self.get_report()
+        # main_df = temp_report.main_df
+        # # Assumes that the report inside a run contains a single line
+        # if main_df.shape[0]==1:
+        #     main_df.loc[0,"Estimated Runtime "] = predicted_runtime
+        #     main_df.loc[0,"Estimated code_size"] = predicted_code_size
+        #     rec = main_df.to_dict()
+        # else:
+        #     logger.warning("Failed to add Estimator results to Report")
+        # self.completed[RunStage.COMPILE] = True
+        self.unlock()
+    
     def load(self):
         """Load the model using the given frontend."""
-        logger.debug("%s Processing stage LOAD", self.prefix)
+        logger.debug("%s [%s] Processing stage LOAD", self.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lock()
         # assert self.completed[RunStage.NOP]
 
@@ -1113,6 +1204,7 @@ class Run:
                 RunStage.LOAD: self.load,
                 RunStage.TUNE: self.tune,
                 RunStage.BUILD: self.build,
+                RunStage.ESTIMATE: self.estimate,
                 RunStage.COMPILE: self.compile,
                 RunStage.RUN: self.run,
                 RunStage.POSTPROCESS: self.postprocess,
@@ -1246,7 +1338,7 @@ class Run:
         return ret
 
     def get_report(self):
-        """Returns teh complete report of this run."""
+        """Returns the complete report of this run."""
         if self.completed[RunStage.POSTPROCESS]:
             if self.report is not None:
                 return (

@@ -54,6 +54,7 @@ class Session:
 
     DEFAULTS = {
         "report_fmt": "csv",
+        "runtime_to_codesize":1 # Ratio of importance between runtime and codesize
     }
 
     def __init__(self, label=None, idx=None, archived=False, dest=None, config=None):
@@ -162,14 +163,18 @@ class Session:
         progress=False,
         export=False,
         context=None,
+        runs_filter=None,
     ):
-        """Process a runs in this session until a given stage."""
+        """Process all runs in this session until a given stage."""
 
         # TODO: Add configurable callbacks for stage/run complete
         assert self.active, "Session needs to be opened first"
 
         self.enumerate_runs()
         self.report = None
+
+        runs = [run for run in self.runs if runs_filter is None or run.idx in runs_filter]
+
         assert num_workers > 0, "num_workers can not be < 1"
         workers = []
         # results = []
