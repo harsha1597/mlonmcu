@@ -665,7 +665,7 @@ def extract_graph_from_session(session_path, filter_rows):
     report_csv = os.path.join(session_path, "report.csv")
     target_function = "tvmgen_default___tvm_main__"
     
-    sw_flags = get_sw_flags(report_csv, infer=True)
+    sw_flags = get_sw_flags(report_csv, post_run=True)
     if not sw_flags:
         logging.warning(f"Skipping session {session_path} due to missing or invalid SW flags.")
         
@@ -697,6 +697,7 @@ def extract_graph_from_session(session_path, filter_rows):
 
 
 def process_path(path, filter):
+    import time
     """
     Worker function to process a single session path.
     This replaces the body of the loop in get_graph_from_session.
@@ -708,7 +709,7 @@ def process_path(path, filter):
     report_csv = os.path.join(path, "report.csv")
     target_function = "tvmgen_default___tvm_main__"
     
-    sw_flags = get_sw_flags(report_csv, infer=True)
+    sw_flags = get_sw_flags(report_csv, post_run=True)
     if not sw_flags:
         logging.warning(f"Skipping session {path} due to missing or invalid SW flags.")
         
@@ -716,10 +717,11 @@ def process_path(path, filter):
 
     try:
         for k, v in sw_flags.items():
+            start_time = time.time()
             run_path = os.path.join(path, str(k))
             if os.path.isdir(run_path):
                 try:
-                    tir_file = [os.path.join(run_path, "tir", "default.tir")]
+                    tir_file = os.path.join(run_path, "tir", "default.tir")
                     c_files = glob(os.path.join(run_path, "cfile", "*.c"))
                     if not c_files:
                         logging.warning(f"No .c file found in {run_path}")
@@ -743,6 +745,8 @@ def process_path(path, filter):
                     X_path.append(g)
                     y_path.append([float(sw_flags[k]["run_instr"]), float(sw_flags[k]["rom_code"]), float(sw_flags[k]["run_time"])])
                     global_sw_flags_path.append(v["sw_flags"])
+                    end_time = time.time()
+                    logging.info(f"Processed run {k} in {end_time - start_time:.2f} seconds.")
                 except Exception as e:
                     
                     logging.error(f"Error processing run {run_path}: {e}", exc_info=True)
@@ -806,11 +810,6 @@ if __name__ == "__main__":
     console = logging.StreamHandler()
     console.setLevel(logging.INFO) 
     logging.getLogger('').addHandler(console)
-    
-    
-    
-    
-    
 
     logging.info("Starting graph extraction process...")
 
@@ -820,7 +819,6 @@ if __name__ == "__main__":
     
     total_size = sum(features.values()) 
     logging.info(f"Total feature size: {total_size}")
-    
     
     dummy_features = np.arange(total_size) 
 

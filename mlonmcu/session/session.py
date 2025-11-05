@@ -17,7 +17,7 @@
 # limitations under the License.
 #
 """Definition of a MLonMCU Run which represents a set of benchmarks in a session."""
-import os
+import os,time
 import shutil
 import filelock
 import tempfile
@@ -28,14 +28,21 @@ from pathlib import Path
 import concurrent.futures
 
 from tqdm import tqdm
+import pandas as pd  # <-- ADDED IMPORT
+import numpy as np   # <-- ADDED IMPORT
 
 from mlonmcu.session.run import Run
 from mlonmcu.logging import get_logger
 from mlonmcu.report import Report
 from mlonmcu.config import filter_config
-
+from mlonmcu.session.estimate.gcn import EstimatePostBuild
+from mlonmcu.session.estimate.extract_graph import get_sw_flags
 from .postprocess.postprocess import SessionPostprocess
 from .run import RunStage
+# vvv ADDED IMPORTS vvv
+from mlonmcu.target.metrics import Metrics
+from mlonmcu.artifact import Artifact, ArtifactFormat
+# ^^^ ADDED IMPORTS ^^^
 
 logger = get_logger()  # TODO: rename to get_mlonmcu_logger
 
@@ -75,7 +82,8 @@ class Session:
         self.dir = Path(dest) if dest is not None else None
         self.tempdir = None
         self.session_lock = None
-
+        self.estimator = None
+        
     @property
     def runs_dir(self):
         return None if self.dir is None else (self.dir / "runs")
@@ -140,7 +148,8 @@ class Session:
         self.next_run_idx = run_idx
         if last_run_idx is not None:
             self.update_latest_run_symlink(last_run_idx)
-
+    
+     
     def update_latest_run_symlink(self, latest_run_idx):
         run_link = self.runs_dir / "latest"  # TODO: Create relative symlink using os.path.relpath for portability
         if os.path.islink(run_link):
@@ -153,7 +162,81 @@ class Session:
         self.next_run_idx += 1
         # TODO: find a better approach for this
         return ret
+    def get_built_files(self,run):
+        import pickle
+        from mlonmcu.models.model import Model, Program
+        """Estimate runtime and codesize using a cost model."""
+        # logger.debug("%s [%s] Processing stage ESTIMATE", run.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        # logger.info(f"MLIF flags: {run.sw_flags}")
+        debug_path = "/nfs/TUEIEDAscratch/ge85zic/graph_regressor/mlonmcu_graph/debug/"
+        run_id=run.idx
+        def get_tir_and_c_files(codegen_dir):
+            tir_file = "default.tir"
+            c_file = "default.c"
+            tir_file_path = None
+            c_file_path = None
 
+            if not os.path.isdir(codegen_dir):
+                logger.warning(f"Codegen directory not found for estimation: {codegen_dir}")
+                return None, None
+
+            contents = os.listdir(codegen_dir)
+            if tir_file in contents:
+                tir_file_path=os.path.join(codegen_dir, tir_file)
+            else:
+                logger.warning(f"TIR file {tir_file} not found in {codegen_dir}")
+                return None,None
+            
+            if c_file in contents:
+                c_file_path=os.path.join(codegen_dir, c_file)
+            elif "codegen" in contents:
+                # try to find c file with default prefix
+                import glob
+                c_files = glob.glob(os.path.join(codegen_dir, "codegen","host","src","default*.c"))
+                # Locate the c file with the main definition
+                c_file_w_main = None
+                if len(c_files) == 3:
+                    c_file_w_main = "default_lib2.c"
+                elif len(c_files)>1:
+                    c_file_w_main = "default_lib1.c"
+                
+                if c_file_w_main:
+                    c_file_path_list = [path for path in c_files if c_file_w_main in os.path.basename(path)]
+                    c_file_path = c_file_path_list[0] if len(c_file_path_list) == 1 else None
+                elif len(c_files) == 1:
+                    c_file_path = c_files[0]
+            
+            return tir_file_path, c_file_path
+       
+        name = "default"
+        
+        if isinstance(run.model, Model):
+            if not run.completed[RunStage.BUILD]:
+                logger.warning(f"Run {run.idx} has not completed BUILD stage. Skipping.")
+                return None, None, None, run_id
+            run.export_stage(RunStage.BUILD, optional=run.export_optional)
+            
+            # This should be initialized here for the artifact injection
+            
+            codegen_dir = run.dir if not run.stage_subdirs else (run.dir / "stages" / str(int(RunStage.BUILD)))
+            
+            sw_feat = run.sw_flags
+            tir_file_path, c_file_path = get_tir_and_c_files(codegen_dir)
+        
+        else: # Program
+            if not run.completed[RunStage.LOAD]:
+                logger.warning(f"Run {run.idx} has not completed LOAD stage. Skipping.")
+                return None, None, None, run_id
+                
+            # if RunStage.ESTIMATE not in run.artifacts_per_stage:
+            #      run.artifacts_per_stage[RunStage.ESTIMATE] = {}
+                 
+            codegen_dir = run.dir if not run.stage_subdirs else (run.dir / "stages" / str(int(RunStage.LOAD))) # Changed from BUILD
+            tir_file_path, c_file_path = get_tir_and_c_files(codegen_dir)
+            sw_feat = run.sw_flags
+            
+        return tir_file_path, c_file_path, sw_feat, run_id
+    
     def process_runs(
         self,
         until=RunStage.DONE,
@@ -163,6 +246,8 @@ class Session:
         progress=False,
         export=False,
         context=None,
+        estimate_postbuild = False,
+        cost_model_path= "/nfs/TUEIEDAscratch/ge85zic/mlonmcu/mlonmcu/session/estimate/model/GNN_Estimator.pt"
         # runs_filter=None,
     ):
         """Process all runs in this session until a given stage."""
@@ -172,11 +257,15 @@ class Session:
 
         self.enumerate_runs()
         self.report = None
-
+        estimator_results={}
         runs = [run for run in self.runs ]#if runs_filter is None or run.idx in runs_filter]
         
         active_run_ids = {run.idx for run in runs} # This list gets filtered after estimate stage
-
+        if estimate_postbuild:
+            logger.info(f"Loading shared GNN estimator from {cost_model_path}...")
+            self.estimator = EstimatePostBuild(cost_model_path)
+            logger.info("Shared estimator loaded.")
+            
         assert num_workers > 0, "num_workers can not be < 1"
         workers = []
         # results = []
@@ -187,11 +276,36 @@ class Session:
         num_failures = 0
         stage_failures = {}
         worker_run_idx = []
-        def filter_from_estimates(report,filter_type="pareto",runtime_threshold=None, code_size_threshold=None, ratio=None):
-            """Filter the report based on estimates using the specified method."""
-            df = report.df
-            runtime_col= "Estimated Runtime [s]"
-            codesize_col= "Estimated Code Size [bytes]"
+
+        
+        def filter_from_estimates(results_dict, filter_type="pareto", runtime_threshold=None, code_size_threshold=None, ratio=None):
+            """Filter runs based on a dictionary of estimation results."""
+            
+            # 1. Create DataFrame from the results dictionary
+            # The keys of the dict are the Run IDs
+            # The values are the (runtime, codesize) tuples or None
+            
+            # Create a DataFrame from the dictionary
+            # Orient='index' makes keys the index and tuples the columns
+            df = pd.DataFrame.from_dict(
+                results_dict, 
+                orient='index', 
+                columns=['Estimated Runtime [s]', 'Estimated Code Size [bytes]']
+            )
+            
+            # Add the Run IDs (the index) as a regular column
+            df['Run'] = df.index
+
+            # 2. Use the exact same filtering logic as before
+            runtime_col = "Estimated Runtime [s]"
+            codesize_col = "Estimated Code Size [bytes]"
+            
+            # Drop rows where estimation failed (where the original value was None, now np.nan)
+            df = df.dropna(subset=[runtime_col, codesize_col])
+            if df.empty:
+                logger.warning("No runs with valid estimates found. Skipping filtering.")
+                return []  # Return no runs
+                
             if filter_type == "threshold" and runtime_threshold is not None and code_size_threshold is not None:
                 filtered_df = df[
                     (df[runtime_col] <= runtime_threshold)
@@ -200,6 +314,43 @@ class Session:
                 filtered_runids = filtered_df["Run"].tolist()
             elif filter_type == "pareto":
                 # Pareto front filtering
+                filtered_indices = []
+                # Use .iterrows() which iterates over rows of the DataFrame
+                for i, row in df.iterrows():
+                    dominated = False
+                    # i is the Run ID (index)
+                    for j, other_row in df.iterrows():
+                        if i != j:
+                            if (
+                                other_row[runtime_col] <= row[runtime_col]
+                                and other_row[codesize_col] <= row[codesize_col]
+                                and (
+                                    other_row[runtime_col] < row[runtime_col]
+                                    or other_row[codesize_col] < row[codesize_col]
+                                )
+                            ):
+                                dominated = True
+                                break
+                    if not dominated:
+                        filtered_indices.append(i) # Add the Run ID (index)
+                
+                # Select the rows based on the index (Run ID)
+                filtered_df = df.loc[filtered_indices]
+                filtered_runids = filtered_df["Run"].tolist()
+            elif filter_type == "weighted":
+                if ratio is None:
+                    logger.warning("Ratio not provided for 'weighted' filter. Defaulting to 0.5.")
+                    ratio = 0.5
+                scores = (
+                    ratio * df[runtime_col] / df[runtime_col].max()
+                    + (1 - ratio) * df[codesize_col] / df[codesize_col].max()
+                )
+                threshold = scores.median()  # Example: keep runs below median score
+                filtered_df = df[scores <= threshold]
+                filtered_runids = filtered_df["Run"].tolist()
+            else:
+                logger.warning(f"Unknown filter type: {filter_type}. Defaulting to 'pareto'.")
+                # Pareto front filtering (default)
                 filtered_indices = []
                 for i, row in df.iterrows():
                     dominated = False
@@ -219,16 +370,7 @@ class Session:
                         filtered_indices.append(i)
                 filtered_df = df.loc[filtered_indices]
                 filtered_runids = filtered_df["Run"].tolist()
-            elif filter_type == "weighted":
-                scores = (
-                    ratio * df[runtime_col] / df[runtime_col].max()
-                    + (1 - ratio) * df[codesize_col] / df[codesize_col].max()
-                )
-                threshold = scores.median()  # Example: keep runs below median score
-                filtered_df = df[scores <= threshold]
-                filtered_runids = filtered_df["Run"].tolist()
-            else:
-                raise ValueError(f"Unknown filter type: {filter_type}")
+                
             return filtered_runids
         
         def _init_progress(total, msg="Processing..."):
@@ -240,7 +382,7 @@ class Session:
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}s]",
                 leave=None,
             )
-
+        
         def _update_progress(pbar, count=1):
             """Helper function to update the progress bar for the session."""
             pbar.update(count)
@@ -249,6 +391,55 @@ class Session:
             """Helper function to close the session progressbar, if available."""
             if pbar:
                 pbar.close()
+        def update_report_with_estimator_results(report, estimator_results):
+            """Merges GNN estimator results into the main session report."""
+            if not estimator_results:
+                # No results to merge, return original report
+                return report
+
+            # 1. Convert the estimator_results dict to a DataFrame
+            #    The keys (run_ids) will become the index.
+            df_estimates = pd.DataFrame.from_dict(
+                estimator_results,
+                orient="index",
+                columns=["Estimated Runtime [s]", "Estimated Code Size [bytes]"],
+            )
+
+            # 2. Name the index 'Run' to match the column in the main report
+            df_estimates.index.name = "Run"
+
+            # 3. Reset the index so 'Run' becomes a regular column for merging
+            df_estimates = df_estimates.reset_index()
+
+            # 4. Get the main part of the report DataFrame
+            df_pre = report.pre_df
+
+            # logger.info(f" df_main: {df_main}")
+            # 5. Check that the main report has a 'Run' column
+            if "Run" not in df_pre.columns:
+                logger.warning("Main report DataFrame (main_df) does not have a 'Run' column. Unable to merge estimates.")
+                return report
+
+            # 6. Ensure the 'Run' columns are of a compatible type for merging.
+            try:
+                # Ensure both 'Run' columns are the same type before merging
+                df_pre["Run"] = pd.to_numeric(df_pre["Run"])
+                df_estimates["Run"] = pd.to_numeric(df_estimates["Run"])
+            except (ValueError, TypeError):
+                logger.warning("Could not convert 'Run' column to numeric. Merge might fail or be incorrect.")
+
+            # 7. Merge the DataFrames
+            #    We use a 'left' merge to keep all rows from the original report (df_main)
+            #    and add the estimate columns. Runs without estimates will have NaN.
+            df_merged = pd.merge(df_pre, df_estimates, on="Run", how="left")
+            rec = df_merged.to_dict()
+            report.set_pre(rec)
+            # logger.info(f" Recs from main: {rec}")
+            #    Assign the newly merged DataFrame back to the report's main_df attribute.
+            # report.main_df = df_merged
+
+            return report
+
 
         def _process(pbar, run, until, skip):
             """Helper function to invoke the run."""
@@ -282,17 +473,20 @@ class Session:
                 _close_progress(pbar)
             return results
 
+        skipped_stages = [stage for stage in RunStage if not any(run.has_stage(stage) for run in runs)]
         def _used_stages(runs, until):
             """Determines the stages which are used by at least one run."""
             used = []
+            
+                    
             for stage_index in list(range(RunStage.LOAD, until + 1)) + [RunStage.POSTPROCESS]:
                 stage = RunStage(stage_index)
-                if any(run.has_stage(stage) for run in runs):
+                if any(run.has_stage(stage) for run in runs) and stage not in skipped_stages:
                     used.append(stage)
             return used
 
         used_stages = _used_stages(self.runs, until)
-        skipped_stages = [stage for stage in RunStage if stage not in used_stages]
+
 
         with concurrent.futures.ThreadPoolExecutor(num_workers) as executor:
             if per_stage:
@@ -329,16 +523,49 @@ class Session:
                             workers.append(executor.submit(_process, pbar, run, until=stage, skip=skipped_stages))
                     _join_workers(workers)
 
-                    if stage == RunStage.ESTIMATE:
-                        logger.info("Generating intermediate report after ESTIMATE stage...")
-                        # Get the report data as it exists right now
-                        report_after_estimate = self.get_reports()
-                        runs_to_compile = filter_from_estimates(report_after_estimate)
-                        # You can now log it or save it
-                        logger.info("Runs to compile after ESTIMATE:\n%s", str(runs_to_compile))
-                        # Clear the cached report so the final one is properly generated
+                    
+                    if stage == RunStage.BUILD and estimate_postbuild:
+                        start_time = time.time()
+                        logger.info("Batch estimating all runs after BUILD stage...")
+                        run_ids=[]
+                        c_files = []
+                        tir_files=[]
+                        sw_feats = []
+                        
+                        # Create a map to find runs by their ID
+                        run_map = {run.idx: run for run in self.runs if run.idx in active_run_ids}
+                        
+                        for run_id in active_run_ids:
+                            run = run_map[run_id]
+                            tir_file_path, c_file_path, sw_feat, _ = self.get_built_files(run)
+                            
+                            if tir_file_path and c_file_path and sw_feat is not None:
+                                run_ids.append(run_id)
+                                c_files.append(c_file_path)
+                                tir_files.append(tir_file_path)
+                                sw_feats.append(sw_feat)
+                            else:
+                                logger.warning(f"Skipping estimation for Run {run_id}: Missing build files or SW features.")
+
+                        if not c_files:
+                             logger.error("No valid files found for estimation. Skipping estimate-based filtering.")
+                             continue # Skip to the next stage
+                             
+                        # Run batch inference
+                        logger.info(f"Running batch inference on {len(c_files)} runs...")
+                        estimator_results = self.estimator.estimate(c_files,tir_files,sw_feats,run_ids)
+                        # logger.info(f"Batch inference complete.{estimator_results}, {run_ids}")
+
+                        runs_to_compile = filter_from_estimates(estimator_results, filter_type="pareto")
+                        
+                        logger.info(f"Proceeding with {len(runs_to_compile)} runs after Pareto filtering: {runs_to_compile}")
+                        
+                        # Update the set of active runs for all subsequent stages
                         active_run_ids = set(runs_to_compile)
-                        self.report = None
+                        end_time = time.time()
+                        logger.info(f"Estimation time: {end_time-start_time} secs")
+                    # ^^^ END OF NEW LOGIC ^^^
+                    
                     workers = []
                     worker_run_idx = []
                     if progress:
@@ -346,6 +573,7 @@ class Session:
                 if progress:
                     _close_progress(pbar2)
             else:
+                # ... (This is the non-per-stage logic, it will not run your filter) ...
                 if progress:
                     pbar = _init_progress(len(self.runs), msg="Processing all runs")
                 else:
@@ -375,6 +603,7 @@ class Session:
                     worker_run_idx.append(i)
                     workers.append(executor.submit(_process, pbar, run, until=until, skip=skipped_stages))
                 _join_workers(workers)
+        
         if num_failures == 0:
             logger.info("All runs completed successfuly!")
         elif num_failures == num_runs:
@@ -392,6 +621,8 @@ class Session:
             logger.info("Summary:\n%s", summary)
 
         report = self.get_reports()
+        report = update_report_with_estimator_results(report, estimator_results)
+
         logger.info("Postprocessing session report")
         # Warning: currently we only support one instance of the same type of postprocess,
         # also it will be applied to all rows!

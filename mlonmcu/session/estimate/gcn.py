@@ -15,6 +15,7 @@ from dgl.data import DGLDataset
 import logging
 
 logger = logging.getLogger(__name__)
+# Best Params from Optuna
 # {'gcn_layers': 3,
 #  'mlp_layers': 2,
 #  'gcn_hidden_feats': 128,
@@ -36,7 +37,7 @@ class GraphRegressionModel(nn.Module):
         """
         super(GraphRegressionModel, self).__init__()
         
-        # --- 1. Build GCN Layers ---
+        
         self.conv_layers = nn.ModuleList()
         # Input layer
         self.conv_layers.append(dglnn.GraphConv(in_feats, gcn_hidden_feats, 
@@ -50,7 +51,7 @@ class GraphRegressionModel(nn.Module):
                                                     allow_zero_in_degree=False))
             gcn_hidden_feats_prev = gcn_hidden_feats_next
 
-        # --- 2. Build Prediction Head (MLP) ---
+        
         self.prediction_head = nn.ModuleList()
         
         # Input layer for MLP
@@ -111,9 +112,12 @@ class EstimatePostBuild():
         
         # 1. Load the checkpoint dictionary
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        checkpoint = torch.load(cost_model_path,map_location=torch.device(self.device))
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
+            checkpoint = torch.load(cost_model_path)
+        if self.device.type == 'cpu':
+            checkpoint = torch.load(cost_model_path,map_location=torch.device(self.device))
+        
         self.model = GraphRegressionModel(
             in_feats=130, 
             global_feats_dim=4
@@ -133,38 +137,100 @@ class EstimatePostBuild():
         
 # Example of using the class:
 # estimator = EstimatePostBuild(cost_model_path="path/to/your/model_checkpoint.pt")
-    def estimate(self,c_file,tir_file,sw_feats):
-        mods = load_tir(tir_file)
-        if not mods:
-            logging.warning(f"No TIR mods loaded from {tir_file}")
-            return None
-        func_name_to_feat = tir_tofeats_mlp(mods, self.filter_rows)
-        nodes, edges = parse_graph_from_c_code(c_file, func_name_to_feat)
-        g = create_dgl_graph(nodes, edges)
-        
-        # Scale node features
-        if hasattr(g, 'ndata') and 'feat' in g.ndata:
-            feats_np = g.ndata['feat'].numpy()
-            scaled_feats = self.feature_scaler.transform(feats_np)
-            g.ndata['feat'] = torch.tensor(scaled_feats, dtype=torch.float32)
-        
-        # Scale edge weights if they exist
-        if hasattr(g, 'edata') and 'weight' in g.edata:
-            ew_np = g.edata['weight'].numpy().reshape(-1, 1)
-            scaled_ew = self.edge_scaler.transform(ew_np).flatten()
-            g.edata['weight'] = torch.tensor(scaled_ew, dtype=torch.float32)
-        
-        global_sw_flags_tensor = torch.tensor(np.array(sw_feats), dtype=torch.float32)
-        self.model.eval() # Set model to evaluation mode
-        
-        with torch.no_grad():
-            g = g.to(self.device)
-            global_sw_flags_tensor = global_sw_flags_tensor.to(self.device).unsqueeze(0)  # Add batch dimension
-            output = self.model(g, global_sw_flags_tensor)
-            output_np = output.cpu().numpy()
-            # Inverse transform the target
-            inv_transformed = self.target_scaler.inverse_transform(output_np)
-            predicted_runtime = 10 ** inv_transformed[0][0]  # Assuming the first output is runtime
-            predicted_code_size = 10 ** inv_transformed[0][1]  # Assuming the second output is code size
-        return predicted_runtime, predicted_code_size
 
+    def estimate(self, c_files, tir_files, sw_feats_list,run_ids):
+        """
+        Estimates runtime and code size for a batch of c_files and tir_files.
+
+        Parameters:
+        - c_files (list): A list of paths to the C code files.
+        - tir_files (list): A list of paths to the TIR (TVM IR) files.
+        - sw_feats_list (list): A list of software feature vectors (e.g., [0, 1, 0, 1]),
+                                one for each file pair.
+        - run_ids (list): List of valid run_idx
+
+        Returns:
+        - list: A list of (predicted_runtime, predicted_code_size) tuples.
+                If a graph fails to be created, its position in the list
+                will contain None.
+        """
+        if not (len(c_files) == len(tir_files) == len(sw_feats_list)):
+            raise ValueError("Input lists (c_files, tir_files, sw_feats_list) must have the same length.")
+
+        graph_list = []
+        global_feats_list = []
+        valid_indices = []  # To track which graphs were successfully created
+
+        
+        for i, (c_file, tir_file, sw_feats,run_id) in enumerate(zip(c_files, tir_files, sw_feats_list,run_ids)):
+            try:
+                mods = load_tir(tir_file)
+                if not mods:
+                    logging.warning(f"No TIR mods loaded from {tir_file}, skipping index {i}")
+                    continue
+                
+                func_name_to_feat = tir_tofeats_mlp(mods, self.filter_rows)
+                nodes, edges = parse_graph_from_c_code(c_file, func_name_to_feat)
+                
+                if not nodes: # Check if graph parsing failed
+                    logging.warning(f"Failed to parse graph from {c_file}, skipping index {i}")
+                    continue
+                
+                g = create_dgl_graph(nodes, edges)
+                
+                
+                if hasattr(g, 'ndata') and 'feat' in g.ndata:
+                    feats_np = g.ndata['feat'].numpy()
+                    scaled_feats = self.feature_scaler.transform(feats_np)
+                    g.ndata['feat'] = torch.tensor(scaled_feats, dtype=torch.float32)
+                
+                if hasattr(g, 'edata') and 'weight' in g.edata:
+                    ew_np = g.edata['weight'].numpy().reshape(-1, 1)
+                    scaled_ew = self.edge_scaler.transform(ew_np).flatten()
+                    g.edata['weight'] = torch.tensor(scaled_ew, dtype=torch.float32)
+
+                
+                global_sw_flags_tensor = torch.tensor(np.array(sw_feats), dtype=torch.float32).unsqueeze(0)
+                
+                
+                graph_list.append(g)
+                global_feats_list.append(global_sw_flags_tensor)
+                valid_indices.append(run_id)
+            
+            except Exception as e:
+                logging.error(f"Error processing files {c_file}/{tir_file} at index {i}: {e}", exc_info=True)
+                continue
+
+        if not graph_list:
+            logging.warning("No valid graphs were created for estimation.")
+            return [None] * len(c_files)  # Return list of Nones matching input length
+
+        
+        self.model.eval()  # Set model to evaluation mode
+        results = []
+        final_results = {}
+
+        with torch.no_grad():
+            # Batch graphs and global features
+            batched_g = dgl.batch(graph_list).to(self.device)
+            batched_global_feats = torch.cat(global_feats_list, dim=0).to(self.device)
+
+            # Run batch inference
+            output = self.model(batched_g, batched_global_feats)
+            output_np = output.cpu().numpy()
+            
+            
+            inv_transformed = self.target_scaler.inverse_transform(output_np)
+            
+            # De-logarithmize (element-wise)
+            predicted_runtimes = 10 ** inv_transformed[:, 0]
+            predicted_code_sizes = 10 ** inv_transformed[:, 1]
+            
+            # Zip results into (runtime, codesize) tuples
+            results = list(zip(predicted_runtimes, predicted_code_sizes))
+            
+            
+            for i, res in zip(valid_indices, results):
+                final_results[i] = res
+
+        return final_results # Dict of 

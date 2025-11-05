@@ -54,10 +54,10 @@ class RunStage(IntEnum):
     LOAD = 1  # unimplemented
     TUNE = 2
     BUILD = 3
-    ESTIMATE=4 # Check if this causes bugs
-    COMPILE = 5
-    RUN = 6
-    POSTPROCESS = 7
+    # ESTIMATE=4 # Check if this causes bugs
+    COMPILE = 4
+    RUN = 5
+    POSTPROCESS = 6
     DONE = 7
 
 
@@ -82,13 +82,13 @@ class Run:
     DEFAULTS = {
         "export_optional": False,
         "tune_enabled": False,
-        "estimate_postbuild":False,
+        
         "target_to_backend": True,
         "target_optimized_layouts": False,
         "target_optimized_schedules": False,
         "stage_subdirs": False,
         "profile_stages": False,
-        "cost_model_path": "/nfs/TUEIEDAscratch/ge85zic/mlonmcu/mlonmcu/session/estimate/model/GNN_Estimator.pt"
+        
     }
 
     REQUIRED = set()
@@ -139,7 +139,6 @@ class Run:
         self.run_config = {}
         self.run_features = self.process_features(features)
         self.run_config = filter_config(self.config, "run", self.DEFAULTS, self.OPTIONAL, self.REQUIRED)
-        self.estimator = EstimatePostBuild(self.run_config["cost_model_path"])
         self.sw_flags = self.get_sw_flags_from_configs()
         self.sub_names = []
         self.sub_parents = {}
@@ -269,8 +268,8 @@ class Run:
             return self.model is not None and len(self.frontends) > 0
         if stage == RunStage.TUNE:
             return self.tune_enabled and self.backend is not None
-        if stage == RunStage.ESTIMATE:
-            return self.estimate_enabled
+        # if stage == RunStage.ESTIMATE:
+        #     return self.estimate_enabled
         if stage == RunStage.BUILD:
             return self.backend is not None and self.framework is not None
         if stage == RunStage.COMPILE:
@@ -1044,119 +1043,119 @@ class Run:
         self.completed[RunStage.TUNE] = True
         self.unlock()
     
-    def estimate(self):
-        import pickle
-        """Estimate runtime and codesize using a cost model."""
-        logger.debug("%s [%s] Processing stage ESTIMATE", self.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        # logger.info(f"MLIF flags: {self.sw_flags}")
-        debug_path = "/nfs/TUEIEDAscratch/ge85zic/graph_regressor/mlonmcu_graph/debug/"
+    # def estimate(self):
+    #     import pickle
+    #     """Estimate runtime and codesize using a cost model."""
+    #     logger.debug("%s [%s] Processing stage ESTIMATE", self.prefix, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    #     # logger.info(f"MLIF flags: {self.sw_flags}")
+    #     debug_path = "/nfs/TUEIEDAscratch/ge85zic/graph_regressor/mlonmcu_graph/debug/"
         
-        def get_tir_and_c_files(codegen_dir):
-            tir_file = "default.tir"
-            c_file = "default.c"
-            tir_file_path = None
-            c_file_path = None
+    #     def get_tir_and_c_files(codegen_dir):
+    #         tir_file = "default.tir"
+    #         c_file = "default.c"
+    #         tir_file_path = None
+    #         c_file_path = None
 
-            if not os.path.isdir(codegen_dir):
-                logger.warning(f"Codegen directory not found for estimation: {codegen_dir}")
-                return None, None
+    #         if not os.path.isdir(codegen_dir):
+    #             logger.warning(f"Codegen directory not found for estimation: {codegen_dir}")
+    #             return None, None
 
-            contents = os.listdir(codegen_dir)
-            if tir_file in contents:
-                tir_file_path=os.path.join(codegen_dir, tir_file)
-            else:
-                logger.warning(f"TIR file {tir_file} not found in {codegen_dir}")
-                return None,None
+    #         contents = os.listdir(codegen_dir)
+    #         if tir_file in contents:
+    #             tir_file_path=os.path.join(codegen_dir, tir_file)
+    #         else:
+    #             logger.warning(f"TIR file {tir_file} not found in {codegen_dir}")
+    #             return None,None
             
-            if c_file in contents:
-                c_file_path=os.path.join(codegen_dir, c_file)
-            elif "codegen" in contents:
-                # try to find c file with default prefix
-                import glob
-                c_files = glob.glob(os.path.join(codegen_dir, "codegen","host","src","default*.c"))
-                # Locate the c file with the main definition
-                c_file_w_main = None
-                if len(c_files) == 3:
-                    c_file_w_main = "default_lib2.c"
-                elif len(c_files)>1:
-                    c_file_w_main = "default_lib1.c"
+    #         if c_file in contents:
+    #             c_file_path=os.path.join(codegen_dir, c_file)
+    #         elif "codegen" in contents:
+    #             # try to find c file with default prefix
+    #             import glob
+    #             c_files = glob.glob(os.path.join(codegen_dir, "codegen","host","src","default*.c"))
+    #             # Locate the c file with the main definition
+    #             c_file_w_main = None
+    #             if len(c_files) == 3:
+    #                 c_file_w_main = "default_lib2.c"
+    #             elif len(c_files)>1:
+    #                 c_file_w_main = "default_lib1.c"
                 
-                if c_file_w_main:
-                    c_file_path_list = [path for path in c_files if c_file_w_main in os.path.basename(path)]
-                    c_file_path = c_file_path_list[0] if len(c_file_path_list) == 1 else None
-                elif len(c_files) == 1:
-                    c_file_path = c_files[0]
+    #             if c_file_w_main:
+    #                 c_file_path_list = [path for path in c_files if c_file_w_main in os.path.basename(path)]
+    #                 c_file_path = c_file_path_list[0] if len(c_file_path_list) == 1 else None
+    #             elif len(c_files) == 1:
+    #                 c_file_path = c_files[0]
             
-            return tir_file_path, c_file_path
+    #         return tir_file_path, c_file_path
         
-        self.lock()
-        if isinstance(self.model, Model):
-            assert self.completed[RunStage.BUILD]
-            self.export_stage(RunStage.BUILD, optional=self.export_optional)
-            self.artifacts_per_stage[RunStage.ESTIMATE] = {}
+    #     self.lock()
+    #     if isinstance(self.model, Model):
+    #         assert self.completed[RunStage.BUILD]
+    #         self.export_stage(RunStage.BUILD, optional=self.export_optional)
+    #         self.artifacts_per_stage[RunStage.ESTIMATE] = {}
             
-            for name in self.artifacts_per_stage[RunStage.BUILD]:
-                codegen_dir = self.dir if not self.stage_subdirs else (self.dir / "stages" / str(int(RunStage.BUILD)))
-                if name not in ["", "default"]:
-                    codegen_dir = codegen_dir / "sub" / name
+    #         for name in self.artifacts_per_stage[RunStage.BUILD]:
+    #             codegen_dir = self.dir if not self.stage_subdirs else (self.dir / "stages" / str(int(RunStage.BUILD)))
+    #             if name not in ["", "default"]:
+    #                 codegen_dir = codegen_dir / "sub" / name
 
-                tir_file_path, c_file_path = get_tir_and_c_files(codegen_dir)
-                new_artifacts = []
-                if c_file_path and tir_file_path:
-                    # logger.info(f"Estimating using TIR file: {tir_file_path} and C file: {c_file_path}")
-                    try:
-                        predicted_runtime, predicted_code_size = self.estimator.estimate(c_file=c_file_path, tir_file=tir_file_path, sw_feats=self.sw_flags)
-                        logger.info(f"Predicted values - Runtime: {predicted_runtime} s, Code size: {predicted_code_size} bytes")
+    #             tir_file_path, c_file_path = get_tir_and_c_files(codegen_dir)
+    #             new_artifacts = []
+    #             if c_file_path and tir_file_path:
+    #                 # logger.info(f"Estimating using TIR file: {tir_file_path} and C file: {c_file_path}")
+    #                 try:
+    #                     predicted_runtime, predicted_code_size = self.estimator.estimate(c_file=c_file_path, tir_file=tir_file_path, sw_feats=self.sw_flags)
+    #                     logger.info(f"Predicted values - Runtime: {predicted_runtime} s, Code size: {predicted_code_size} bytes")
                         
-                        # Create Metrics and Artifact
-                        metrics = Metrics()
-                        metrics.add("Estimated Runtime [s]", predicted_runtime)
-                        metrics.add("Estimated Code Size [bytes]", predicted_code_size)
+    #                     # Create Metrics and Artifact
+    #                     metrics = Metrics()
+    #                     metrics.add("Estimated Runtime [s]", predicted_runtime)
+    #                     metrics.add("Estimated Code Size [bytes]", predicted_code_size)
 
-                        metrics_csv = metrics.to_csv(include_optional=True)
-                        metrics_artifact = Artifact(
-                            "estimate_metrics.csv", content=metrics_csv, fmt=ArtifactFormat.TEXT
-                        )
-                        new_artifacts.append(metrics_artifact)
-                    except Exception as e:
-                        logger.error(f"Error occurred during estimation: {e}")
+    #                     metrics_csv = metrics.to_csv(include_optional=True)
+    #                     metrics_artifact = Artifact(
+    #                         "estimate_metrics.csv", content=metrics_csv, fmt=ArtifactFormat.TEXT
+    #                     )
+    #                     new_artifacts.append(metrics_artifact)
+    #                 except Exception as e:
+    #                     logger.error(f"Error occurred during estimation: {e}")
                 
-                new = {name if name in ["", "default"] else f"{name}": new_artifacts}
-                self.artifacts_per_stage[RunStage.ESTIMATE].update(new)
-                self.sub_parents.update({(RunStage.ESTIMATE, key): (self.last_stage, name) for key in new.keys()})
-        else:
-            assert self.completed[RunStage.LOAD]
-            self.artifacts_per_stage[RunStage.ESTIMATE] = {}
-            codegen_dir = self.dir if not self.stage_subdirs else (self.dir / "stages" / str(int(RunStage.LOAD))) # Changed from BUILD
+    #             new = {name if name in ["", "default"] else f"{name}": new_artifacts}
+    #             self.artifacts_per_stage[RunStage.ESTIMATE].update(new)
+    #             self.sub_parents.update({(RunStage.ESTIMATE, key): (self.last_stage, name) for key in new.keys()})
+    #     else:
+    #         assert self.completed[RunStage.LOAD]
+    #         self.artifacts_per_stage[RunStage.ESTIMATE] = {}
+    #         codegen_dir = self.dir if not self.stage_subdirs else (self.dir / "stages" / str(int(RunStage.LOAD))) # Changed from BUILD
             
-            tir_file_path, c_file_path = get_tir_and_c_files(codegen_dir)
-            new_artifacts = []
-            if c_file_path and tir_file_path:
-                try:
-                    predicted_runtime, predicted_code_size = self.estimator.estimate(c_file=c_file_path, tir_file=tir_file_path, sw_feats=self.sw_flags)
-                    logger.info(f"Predicted values - Runtime: {predicted_runtime} s, Code size: {predicted_code_size} bytes")
+    #         tir_file_path, c_file_path = get_tir_and_c_files(codegen_dir)
+    #         new_artifacts = []
+    #         if c_file_path and tir_file_path:
+    #             try:
+    #                 predicted_runtime, predicted_code_size = self.estimator.estimate(c_file=c_file_path, tir_file=tir_file_path, sw_feats=self.sw_flags)
+    #                 logger.info(f"Predicted values - Runtime: {predicted_runtime} s, Code size: {predicted_code_size} bytes")
                     
-                    metrics = Metrics()
-                    metrics.add("Estimated Runtime [s]", predicted_runtime)
-                    metrics.add("Estimated Code Size [bytes]", predicted_code_size)
+    #                 metrics = Metrics()
+    #                 metrics.add("Estimated Runtime [s]", predicted_runtime)
+    #                 metrics.add("Estimated Code Size [bytes]", predicted_code_size)
 
-                    metrics_csv = metrics.to_csv(include_optional=True)
-                    metrics_artifact = Artifact(
-                        "estimate_metrics.csv", content=metrics_csv, fmt=ArtifactFormat.TEXT
-                    )
-                    new_artifacts.append(metrics_artifact)
-                except Exception as e:
-                    logger.error(f"Error occurred during estimation: {e}")
+    #                 metrics_csv = metrics.to_csv(include_optional=True)
+    #                 metrics_artifact = Artifact(
+    #                     "estimate_metrics.csv", content=metrics_csv, fmt=ArtifactFormat.TEXT
+    #                 )
+    #                 new_artifacts.append(metrics_artifact)
+    #             except Exception as e:
+    #                 logger.error(f"Error occurred during estimation: {e}")
             
-            name = "default"
-            new = {name if name in ["", "default"] else f"{name}": new_artifacts}
-            self.artifacts_per_stage[RunStage.ESTIMATE].update(new)
-            self.sub_parents.update({(RunStage.ESTIMATE, key): (self.last_stage, name) for key in new.keys()})
+    #         name = "default"
+    #         new = {name if name in ["", "default"] else f"{name}": new_artifacts}
+    #         self.artifacts_per_stage[RunStage.ESTIMATE].update(new)
+    #         self.sub_parents.update({(RunStage.ESTIMATE, key): (self.last_stage, name) for key in new.keys()})
 
-        self.sub_names.extend(self.artifacts_per_stage[RunStage.ESTIMATE])
-        self.sub_names = list(set(self.sub_names))
-        self.completed[RunStage.ESTIMATE] = True
-        self.unlock()
+    #     self.sub_names.extend(self.artifacts_per_stage[RunStage.ESTIMATE])
+    #     self.sub_names = list(set(self.sub_names))
+    #     self.completed[RunStage.ESTIMATE] = True
+    #     self.unlock()
 
     def load(self):
         """Load the model using the given frontend."""
@@ -1206,6 +1205,8 @@ class Run:
 
         self.completed[RunStage.LOAD] = True
         self.unlock()
+    def skip_estimate(self):
+        pass
 
     def process(self, until=RunStage.RUN, start=None, skip=None, export=False):
         """Process the run until a given stage."""
@@ -1247,7 +1248,7 @@ class Run:
                 RunStage.LOAD: self.load,
                 RunStage.TUNE: self.tune,
                 RunStage.BUILD: self.build,
-                RunStage.ESTIMATE: self.estimate,
+                # RunStage.ESTIMATE: self.skip_estimate, #estimate,
                 RunStage.COMPILE: self.compile,
                 RunStage.RUN: self.run,
                 RunStage.POSTPROCESS: self.postprocess,
