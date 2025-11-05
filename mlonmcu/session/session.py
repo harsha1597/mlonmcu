@@ -391,7 +391,7 @@ class Session:
             """Helper function to close the session progressbar, if available."""
             if pbar:
                 pbar.close()
-        def update_report_with_estimator_results(report, estimator_results):
+        def update_report_with_estimator_results(report, estimator_results,estimator_time):
             """Merges GNN estimator results into the main session report."""
             if not estimator_results:
                 # No results to merge, return original report
@@ -410,7 +410,7 @@ class Session:
 
             # 3. Reset the index so 'Run' becomes a regular column for merging
             df_estimates = df_estimates.reset_index()
-
+            df_estimates["Total Estimation Time [s]"] = estimator_time # Same for all runs
             # 4. Get the main part of the report DataFrame
             df_pre = report.pre_df
 
@@ -563,7 +563,8 @@ class Session:
                         # Update the set of active runs for all subsequent stages
                         active_run_ids = set(runs_to_compile)
                         end_time = time.time()
-                        logger.info(f"Estimation time: {end_time-start_time} secs")
+                        estimator_time = end_time - start_time
+                        logger.info(f"Estimation time: {estimator_time} secs")
                     # ^^^ END OF NEW LOGIC ^^^
                     
                     workers = []
@@ -621,7 +622,8 @@ class Session:
             logger.info("Summary:\n%s", summary)
 
         report = self.get_reports()
-        report = update_report_with_estimator_results(report, estimator_results)
+        if estimate_postbuild:
+            report = update_report_with_estimator_results(report, estimator_results,estimator_time)
 
         logger.info("Postprocessing session report")
         # Warning: currently we only support one instance of the same type of postprocess,
