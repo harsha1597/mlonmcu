@@ -163,7 +163,7 @@ class Session:
         progress=False,
         export=False,
         context=None,
-        runs_filter=None,
+        # runs_filter=None,
     ):
         """Process all runs in this session until a given stage."""
 
@@ -173,7 +173,9 @@ class Session:
         self.enumerate_runs()
         self.report = None
 
-        runs = [run for run in self.runs if runs_filter is None or run.idx in runs_filter]
+        runs = [run for run in self.runs ]#if runs_filter is None or run.idx in runs_filter]
+        
+        active_run_ids = {run.idx for run in runs} # This list gets filtered after estimate stage
 
         assert num_workers > 0, "num_workers can not be < 1"
         workers = []
@@ -185,7 +187,50 @@ class Session:
         num_failures = 0
         stage_failures = {}
         worker_run_idx = []
-
+        def filter_from_estimates(report,filter_type="pareto",runtime_threshold=None, code_size_threshold=None, ratio=None):
+            """Filter the report based on estimates using the specified method."""
+            df = report.df
+            runtime_col= "Estimated Runtime [s]"
+            codesize_col= "Estimated Code Size [bytes]"
+            if filter_type == "threshold" and runtime_threshold is not None and code_size_threshold is not None:
+                filtered_df = df[
+                    (df[runtime_col] <= runtime_threshold)
+                    & (df[codesize_col] <= code_size_threshold)
+                ]
+                filtered_runids = filtered_df["Run"].tolist()
+            elif filter_type == "pareto":
+                # Pareto front filtering
+                filtered_indices = []
+                for i, row in df.iterrows():
+                    dominated = False
+                    for j, other_row in df.iterrows():
+                        if i != j:
+                            if (
+                                other_row[runtime_col] <= row[runtime_col]
+                                and other_row[codesize_col] <= row[codesize_col]
+                                and (
+                                    other_row[runtime_col] < row[runtime_col]
+                                    or other_row[codesize_col] < row[codesize_col]
+                                )
+                            ):
+                                dominated = True
+                                break
+                    if not dominated:
+                        filtered_indices.append(i)
+                filtered_df = df.loc[filtered_indices]
+                filtered_runids = filtered_df["Run"].tolist()
+            elif filter_type == "weighted":
+                scores = (
+                    ratio * df[runtime_col] / df[runtime_col].max()
+                    + (1 - ratio) * df[codesize_col] / df[codesize_col].max()
+                )
+                threshold = scores.median()  # Example: keep runs below median score
+                filtered_df = df[scores <= threshold]
+                filtered_runids = filtered_df["Run"].tolist()
+            else:
+                raise ValueError(f"Unknown filter type: {filter_type}")
+            return filtered_runids
+        
         def _init_progress(total, msg="Processing..."):
             """Helper function to initialize a progress bar for the session."""
             return tqdm(
@@ -275,12 +320,25 @@ class Session:
                                     total_threads,
                                     cpu_count,
                                 )
+                        if run.idx not in active_run_ids:
+                            continue
                         if run.failing:
                             logger.warning("Skiping stage '%s' for failed run", run_stage)
                         else:
                             worker_run_idx.append(i)
                             workers.append(executor.submit(_process, pbar, run, until=stage, skip=skipped_stages))
                     _join_workers(workers)
+
+                    if stage == RunStage.ESTIMATE:
+                        logger.info("Generating intermediate report after ESTIMATE stage...")
+                        # Get the report data as it exists right now
+                        report_after_estimate = self.get_reports()
+                        runs_to_compile = filter_from_estimates(report_after_estimate)
+                        # You can now log it or save it
+                        logger.info("Runs to compile after ESTIMATE:\n%s", str(runs_to_compile))
+                        # Clear the cached report so the final one is properly generated
+                        active_run_ids = set(runs_to_compile)
+                        self.report = None
                     workers = []
                     worker_run_idx = []
                     if progress:
